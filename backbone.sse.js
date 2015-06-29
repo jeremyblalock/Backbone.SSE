@@ -23,6 +23,10 @@
     constructor: function(attributes, options) {
       _.bindAll(this, '_receiveMessage', '_receiveError', '_receiveOpen');
 
+      // Setup some instance variables:
+      this._activeEvents = [];
+      this._partials = {};
+
       // Call super constructor
       Backbone.Model.prototype.constructor.apply(this, arguments);
     },
@@ -44,6 +48,11 @@
       this._eventSource.addEventListener('message', this._receiveMessage);
       this._eventSource.addEventListener('error',   this._receiveError);
       this._eventSource.addEventListener('open',    this._receiveOpen);
+
+      // Listen to user-defined events
+      for (var i = 0; i < this._activeEvents.length; i += 1) {
+        this._listenToEvent(this._activeEvents[i]);
+      }
     },
 
     /*
@@ -53,16 +62,41 @@
     stop: function() {
       if (this._eventSource) {
         // Close connection
-        this._eventSource.stop();
+        this._eventSource.close();
 
         // Cleanup
         this._eventSource.removeEventListener('message', this._receiveMessage);
         this._eventSource.removeEventListener('error',   this._receiveError);
         this._eventSource.removeEventListener('open',    this._receiveOpen);
 
+        // Cleanup to user-defined events
+        for (var i = 0; i < this._activeEvents.length; i += 1) {
+          this._stopListeningToEvent(this._activeEvents[i]);
+        }
+
         // Unset
         this._eventSource = null;
       }
+    },
+
+    /*
+     * Stop and start connection, to reset if failing.
+     */
+    restart: function() {
+      this.stop();
+      this.start();
+    },
+
+    /*
+     * Capture events we're trying to listen to, to make sure we're
+     * triggering those events.
+     */
+    on: function(name) {
+      if (this._activeEvents.indexOf(name) == -1) {
+        this._activeEvents.push(name);
+        this._listenToEvent(name);
+      }
+      Backbone.Model.prototype.on.apply(this, arguments);
     },
 
     /* Receive data.
@@ -71,6 +105,16 @@
       var data = JSON.parse(e.data);
       this.set(this.parse(data));
       this.trigger('sync', this);
+    },
+
+    /* Receive arbitrary event.
+     * Triggers that event. */
+    _receiveEvent: function(evt, e) {
+      var data = null;
+      if (e.data) {
+        data = JSON.parse(e.data);
+      }
+      this.trigger(evt, data, e);
     },
 
     /* Error Occurred.
@@ -83,6 +127,36 @@
      * Trigger open event. */
     _receiveOpen: function(e) {
       this.trigger('opened', this);
+    },
+
+    /* Wrap underscore.js partial, using singleton pattern.
+     * Will only work with string and numeric arguments. */
+    _partial: function(functionName) {
+      var args = _.values(arguments),
+          key = args.join(',');
+      if (key in this._partials) {
+        return this._partials[key];
+      }
+      var func = this[functionName];
+      if (!func) return null;
+      var partial = _.bind.apply(_, [func, this].concat(args.slice(1)));
+      this._partials[key] = partial;
+      return partial
+    },
+
+    /* Listen to an arbitrary SSE event.
+     * Useful for listening to heartbeats, updates, etc. */
+    _listenToEvent: function(evt) {
+      if (!this._eventSource) return;
+      var func = this._partial('_receiveEvent', evt);
+      this._eventSource.addEventListener(evt, func);
+    },
+
+    /* Stop listening to arbitrary SSE event.
+     * Follows same pattern as _listenToEvent. */
+    _stopListeningToEvent: function(evt) {
+      var func = this._partial('_receiveEvent', evt);
+      this._eventSource.removeEventListener(evt, func);
     },
 
     /* Disable invalid methods: */
